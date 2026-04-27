@@ -99,14 +99,21 @@ jobs:
           CIBW_ARCHS_WINDOWS: AMD64
           # variant=metal → native arm64 (macos-14); variant=cpu → cross-build x86_64 from arm64 runner.
           CIBW_ARCHS_MACOS: ${{ matrix.variant == 'metal' && 'arm64' || 'x86_64' }}
-          CIBW_ENVIRONMENT_LINUX: >-
-            CMAKE_ARGS=${{ matrix.variant == 'cuda' && '-DGGML_CUDA=on -DCMAKE_CUDA_ARCHITECTURES=80;86;89;90' || '' }}
+          # cibuildwheel parses CIBW_ENVIRONMENT shell-style: values containing
+          # spaces or `;` MUST be double-quoted, otherwise the parser splits
+          # mid-value and rejects the rest as a "Malformed environment option".
+          # The `>-` folded scalar emits the substituted value unquoted; switch
+          # to `|` literal style with each var on its own line and explicitly
+          # quote CMAKE_ARGS so the embedded `-DCMAKE_CUDA_ARCHITECTURES=80;86;89;90`
+          # survives intact.
+          CIBW_ENVIRONMENT_LINUX: |
+            CMAKE_ARGS="${{ matrix.variant == 'cuda' && '-DGGML_CUDA=on -DCMAKE_CUDA_ARCHITECTURES=80;86;89;90' || '' }}"
             MAX_JOBS=2
-          CIBW_ENVIRONMENT_WINDOWS: >-
-            CMAKE_ARGS=${{ matrix.variant == 'cuda' && '-DGGML_CUDA=on -DCMAKE_CUDA_ARCHITECTURES=80;86;89;90' || '' }}
+          CIBW_ENVIRONMENT_WINDOWS: |
+            CMAKE_ARGS="${{ matrix.variant == 'cuda' && '-DGGML_CUDA=on -DCMAKE_CUDA_ARCHITECTURES=80;86;89;90' || '' }}"
             MAX_JOBS=2
-          CIBW_ENVIRONMENT_MACOS: >-
-            CMAKE_ARGS=${{ matrix.variant == 'metal' && '-DGGML_METAL=on -DGGML_METAL_EMBED_LIBRARY=ON' || '' }}
+          CIBW_ENVIRONMENT_MACOS: |
+            CMAKE_ARGS="${{ matrix.variant == 'metal' && '-DGGML_METAL=on -DGGML_METAL_EMBED_LIBRARY=ON' || '' }}"
             MAX_JOBS=2
           # Use `python -m pip` so Windows can self-upgrade pip without the
           # "ERROR: To modify pip, please run the following command..." abort
