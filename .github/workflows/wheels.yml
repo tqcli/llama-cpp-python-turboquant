@@ -72,7 +72,16 @@ jobs:
         with:
           cuda: "12.8.0"
           method: "network"
-          sub-packages: '["nvcc","cudart","cublas","cublas_dev","curand","curand_dev","cusparse","cusparse_dev","cusolver","cusolver_dev"]'
+          # NVIDIA's CUDA 12+ apt repo splits packages into two namespaces:
+          #   cuda-<name>-12-8 — toolchain (nvcc, cudart, ...)
+          #   lib<name>-12-8   — runtime libraries (cublas, curand, ...)
+          # Jimver/cuda-toolkit reflects this split via two inputs. Passing a
+          # library name through `sub-packages` constructs `cuda-cublas-12-8`
+          # which does not exist (Jimver issue #371). We only need cublas +
+          # curand for llama.cpp's GGML_CUDA build (cusparse/cusolver are not
+          # linked by ggml-cuda).
+          sub-packages: '["nvcc","cudart"]'
+          non-cuda-sub-packages: '["libcublas","libcublas-dev","libcurand","libcurand-dev"]'
 
       - name: Install CUDA 12.8 toolkit (Windows)
         if: matrix.variant == 'cuda' && runner.os == 'Windows'
