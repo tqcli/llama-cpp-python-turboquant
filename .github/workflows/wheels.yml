@@ -88,15 +88,16 @@ jobs:
           CIBW_SKIP: "*-musllinux* *-manylinux_i686 pp*"
           CIBW_ARCHS_LINUX: x86_64
           CIBW_ARCHS_WINDOWS: AMD64
-          # Use a CUDA-enabled manylinux_2_28 image so nvcc is visible inside
-          # the cibuildwheel container (the Jimver-on-host approach we tried
-          # in iterations #1–#4 did not survive into the sandbox). The
-          # scikit-build org maintains this image specifically for this use
-          # case; nvcc + libcublas + libcurand are pre-installed at
-          # /usr/local/cuda. CPU cells use the same image — wheel doesn't
-          # link CUDA when -DGGML_CUDA is OFF, so no payload bloat.
-          # See https://github.com/scikit-build/manylinux for the image source.
-          CIBW_MANYLINUX_X86_64_IMAGE: ghcr.io/scikit-build/manylinux_2_28_x86_64_cuda:12.8
+          # Use PyTorch's manylinux2014_x86_64 + CUDA 12.8 image. nvcc +
+          # libcublas + libcurand are at /usr/local/cuda. PyTorch maintains
+          # this image to build their own wheels; well-tested. CPU cells use
+          # the same image — wheel doesn't link CUDA when -DGGML_CUDA is OFF,
+          # so no payload bloat. (The first attempt at this iteration used
+          # ghcr.io/scikit-build/manylinux_2_28_x86_64_cuda:12.8 but that
+          # repo returned `denied` from GHCR — the image does not exist or
+          # is private. Path B (track at #3) replaces both with self-install
+          # in the canonical PyPA manylinux image.)
+          CIBW_MANYLINUX_X86_64_IMAGE: pytorch/manylinux-builder:cuda12.8
           # variant=metal → native arm64 (macos-14); variant=cpu → cross-build x86_64 from arm64 runner.
           CIBW_ARCHS_MACOS: ${{ matrix.variant == 'metal' && 'arm64' || 'x86_64' }}
           # cibuildwheel parses CIBW_ENVIRONMENT shell-style: values containing
@@ -114,8 +115,15 @@ jobs:
           CIBW_ENVIRONMENT_WINDOWS: |
             CMAKE_ARGS="${{ matrix.variant == 'cuda' && '-DGGML_CUDA=on -DCMAKE_CUDA_ARCHITECTURES=80;86;89;90' || '' }}"
             MAX_JOBS=2
+          # variant=metal: native arm64 build, default GGML_NATIVE detection works.
+          # variant=cpu: cross-build x86_64 from arm64 runner. llama.cpp's
+          # GGML_NATIVE auto-detect probes the host CPU (apple-m1) and emits
+          # `-mcpu=apple-m1` even for the x86_64 target — clang then errors
+          # with "unknown target CPU 'apple-m1'". Disable GGML_NATIVE and set
+          # an explicit Intel-Mac SIMD baseline (every Intel Mac shipped since
+          # ~2013 supports AVX/AVX2/FMA).
           CIBW_ENVIRONMENT_MACOS: |
-            CMAKE_ARGS="${{ matrix.variant == 'metal' && '-DGGML_METAL=on -DGGML_METAL_EMBED_LIBRARY=ON' || '' }}"
+            CMAKE_ARGS="${{ matrix.variant == 'metal' && '-DGGML_METAL=on -DGGML_METAL_EMBED_LIBRARY=ON' || '-DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON' }}"
             MAX_JOBS=2
           # Use `python -m pip` so Windows can self-upgrade pip without the
           # "ERROR: To modify pip, please run the following command..." abort
