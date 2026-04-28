@@ -235,6 +235,14 @@ jobs:
         with:
           path: dist
           merge-multiple: true
-      - name: Drop SHA256SUMS before publish
-        run: cd dist && rm -f SHA256SUMS *.txt
+      - name: Drop SHA256SUMS + sweep wheel before publish
+        run: |
+          cd dist
+          rm -f SHA256SUMS *.txt
+          # iter #13: sweep cell's manylinux_2_34 wheel is data-collection
+          # only; not promoted to PyPI in 0.7.0. If the sweep validates
+          # Path B, 0.7.1 will explicitly include 2_34 wheels. The wheel
+          # remains attached to the GitHub Release for inspection.
+          rm -f *manylinux_2_34*.whl
+          ls -la
       - uses: pypa/gh-action-pypi-publish@release/v1
