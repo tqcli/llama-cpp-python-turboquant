@@ -110,8 +110,15 @@ jobs:
           # to `|` literal style with each var on its own line and explicitly
           # quote CMAKE_ARGS so the embedded `-DCMAKE_CUDA_ARCHITECTURES=80;86;89;90`
           # survives intact.
+          # -DLLAMA_BUILD_TOOLS=OFF: skip llama-mtmd-cli + llama-mtmd-debug
+          # executables. The Python wheel only needs libllama.so (Python
+          # bindings link it directly), and skipping the tools avoids an
+          # upstream-CMake bug where the tool targets don't propagate
+          # CUDA::cudart linkage from libggml-cuda.so, causing
+          # `undefined reference to cudaFree@libcudart.so.12` at the final
+          # executable link step (Linux CUDA cells, iter #8 + #9).
           CIBW_ENVIRONMENT_LINUX: |
-            CMAKE_ARGS="${{ matrix.variant == 'cuda' && '-DGGML_CUDA=on -DCMAKE_CUDA_ARCHITECTURES=80;86;89;90 -DCMAKE_CUDA_RUNTIME_LIBRARY=Shared -DCUDAToolkit_ROOT=/usr/local/cuda' || '' }}"
+            CMAKE_ARGS="-DLLAMA_BUILD_TOOLS=OFF ${{ matrix.variant == 'cuda' && '-DGGML_CUDA=on -DCMAKE_CUDA_ARCHITECTURES=80;86;89;90 -DCMAKE_CUDA_RUNTIME_LIBRARY=Shared -DCUDAToolkit_ROOT=/usr/local/cuda' || '' }}"
             CUDA_HOME=/usr/local/cuda
             PATH=/usr/local/cuda/bin:$PATH
             LIBRARY_PATH=/usr/local/cuda/lib64:/usr/local/cuda/lib64/stubs
@@ -126,7 +133,7 @@ jobs:
           # the actual base of pytorch's image).
           CIBW_REPAIR_WHEEL_COMMAND_LINUX: "auditwheel repair --plat manylinux2014_x86_64 -w {dest_dir} {wheel}"
           CIBW_ENVIRONMENT_WINDOWS: |
-            CMAKE_ARGS="${{ matrix.variant == 'cuda' && '-DGGML_CUDA=on -DCMAKE_CUDA_ARCHITECTURES=80;86;89;90' || '' }}"
+            CMAKE_ARGS="-DLLAMA_BUILD_TOOLS=OFF ${{ matrix.variant == 'cuda' && '-DGGML_CUDA=on -DCMAKE_CUDA_ARCHITECTURES=80;86;89;90' || '' }}"
             MAX_JOBS=2
           # variant=metal: native arm64 build, default GGML_NATIVE detection works.
           # variant=cpu: cross-build x86_64 from arm64 runner. Three things to
@@ -143,7 +150,7 @@ jobs:
           #     became available with 10.15 (Catalina). cibuildwheel's
           #     x86_64 default of 10.9 is older than std::filesystem.
           CIBW_ENVIRONMENT_MACOS: |
-            CMAKE_ARGS="${{ matrix.variant == 'metal' && '-DGGML_METAL=on -DGGML_METAL_EMBED_LIBRARY=ON' || '-DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_METAL=OFF -DGGML_BLAS=OFF' }}"
+            CMAKE_ARGS="-DLLAMA_BUILD_TOOLS=OFF ${{ matrix.variant == 'metal' && '-DGGML_METAL=on -DGGML_METAL_EMBED_LIBRARY=ON' || '-DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_METAL=OFF -DGGML_BLAS=OFF' }}"
             MACOSX_DEPLOYMENT_TARGET=${{ matrix.variant == 'metal' && '11.0' || '10.15' }}
             MAX_JOBS=2
           # Use `python -m pip` so Windows can self-upgrade pip without the
