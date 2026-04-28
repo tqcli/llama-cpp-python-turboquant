@@ -111,6 +111,7 @@ jobs:
             CMAKE_ARGS="${{ matrix.variant == 'cuda' && '-DGGML_CUDA=on -DCMAKE_CUDA_ARCHITECTURES=80;86;89;90' || '' }}"
             CUDA_HOME=/usr/local/cuda
             PATH=/usr/local/cuda/bin:$PATH
+            AUDITWHEEL_PLAT=manylinux2014_x86_64
             MAX_JOBS=2
           CIBW_ENVIRONMENT_WINDOWS: |
             CMAKE_ARGS="${{ matrix.variant == 'cuda' && '-DGGML_CUDA=on -DCMAKE_CUDA_ARCHITECTURES=80;86;89;90' || '' }}"
