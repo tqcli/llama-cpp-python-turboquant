@@ -57,6 +57,16 @@ dev = [
     "pytest>=7.4.0",
     "httpx>=0.24.1",
 ]
+# CUDA 12.8 runtime libraries provided as PyPI wheels. Required for the
+# CUDA-tagged binary wheels: auditwheel excludes libcudart.so.12 +
+# libcublas.so.12 + libcublasLt.so.12 from the Linux wheel during repair,
+# so the C extension's RPATH ($ORIGIN/../../nvidia/*/lib) resolves to the
+# pip-installed nvidia wheels at runtime. Pinned to the exact 12.8.0
+# series to prevent accidental drift to 12.9.x.
+cuda12 = [
+    "nvidia-cuda-runtime-cu12==12.8.57",
+    "nvidia-cublas-cu12==12.8.3.14",
+]
 all = [
     "llama_cpp_python[server,test,dev]",
 ]

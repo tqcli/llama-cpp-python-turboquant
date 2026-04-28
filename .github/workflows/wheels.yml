@@ -5,12 +5,8 @@ name: Build wheels
 # Trusted Publishing (PyPI) is configured against:
 #   project:  llama-cpp-python-turboquant
 #   owner:    tqcli
-#   repo:     llama-cpp-python-turboquant   (note: NOT llama-cpp-turboquant)
+#   repo:     llama-cpp-python-turboquant
 #   workflow: wheels.yml
-#   environment: (none — leave blank to match the form template used in 0.B)
-#
-# The publish job uses pypa/gh-action-pypi-publish@release/v1 with NO
-# `with.password:` argument; OIDC handles auth.
 
 on:
   push:
@@ -26,37 +22,25 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # ---------- Linux x86_64 ----------
+          # Linux x86_64
           - { os: ubuntu-latest,  python: "310", variant: cpu  }
           - { os: ubuntu-latest,  python: "311", variant: cpu  }
           - { os: ubuntu-latest,  python: "312", variant: cpu  }
           - { os: ubuntu-latest,  python: "310", variant: cuda }
           - { os: ubuntu-latest,  python: "311", variant: cuda }
           - { os: ubuntu-latest,  python: "312", variant: cuda }
-          # ---------- Windows x86_64 ----------
+          # Windows x86_64
           - { os: windows-latest, python: "310", variant: cpu  }
           - { os: windows-latest, python: "311", variant: cpu  }
           - { os: windows-latest, python: "312", variant: cpu  }
           - { os: windows-latest, python: "310", variant: cuda }
           - { os: windows-latest, python: "311", variant: cuda }
           - { os: windows-latest, python: "312", variant: cuda }
-          # ---------- macOS arm64 (Metal) ----------
+          # macOS arm64 (Metal)
           - { os: macos-14, python: "310", variant: metal }
           - { os: macos-14, python: "311", variant: metal }
           - { os: macos-14, python: "312", variant: metal }
-          # macOS x86_64 (Intel Mac) — DROPPED for 0.7.0.
-          # Upstream llama-cpp-python's CMakeLists.txt uses
-          # `set(GGML_METAL ON ... FORCE)` for ALL macOS builds (line 95),
-          # which drags in Metal compile units that need C++17 std::filesystem
-          # (macOS 10.15+) — incompatible with cibuildwheel's x86_64 default
-          # deployment target of 10.9. Patching upstream's FORCE creates merge
-          # debt; cross-build with a 10.15 target works in env but the
-          # `set(... FORCE)` overrides our `-DGGML_METAL=OFF`.
-          # Apple Silicon (Metal) cells above cover ~85-90% of Macs sold
-          # since 2020. Intel Mac users `pip install ...` falls back to
-          # source build via the published sdist. Re-enable in 0.7.1 once the
-          # upstream FORCE lines are patched. Tracked at
-          # https://github.com/tqcli/tqcli/issues (file 0.7.1 follow-up).
+          # macOS x86_64 dropped for 0.7.0; re-enable in 0.7.1 once upstream FORCE patches land.
 
     steps:
       - uses: actions/checkout@v4
@@ -69,14 +53,6 @@ jobs:
         with:
           key: ${{ matrix.os }}-cp${{ matrix.python }}-${{ matrix.variant }}
 
-      # Linux CUDA path: cibuildwheel runs the build inside a sandboxed
-      # manylinux Docker container, so installing CUDA on the host runner
-      # (e.g. via Jimver) is invisible to nvcc inside the build. Use a
-      # CUDA-enabled manylinux_2_28 image instead — see CIBW_MANYLINUX_X86_64_IMAGE
-      # below. No Linux Jimver step is needed.
-      #
-      # Windows cibuildwheel runs directly on the host (no Docker), so the
-      # Jimver-on-host install IS visible to the build. Keep it for Windows.
       - name: Install CUDA 12.8 toolkit (Windows)
         if: matrix.variant == 'cuda' && runner.os == 'Windows'
         uses: Jimver/cuda-toolkit@v0.2.30
@@ -91,86 +67,74 @@ jobs:
           CIBW_SKIP: "*-musllinux* *-manylinux_i686 pp*"
           CIBW_ARCHS_LINUX: x86_64
           CIBW_ARCHS_WINDOWS: AMD64
-          # Use PyTorch's manylinux2014_x86_64 + CUDA 12.8 image. nvcc +
-          # libcublas + libcurand are at /usr/local/cuda. PyTorch maintains
-          # this image to build their own wheels; well-tested. CPU cells use
-          # the same image — wheel doesn't link CUDA when -DGGML_CUDA is OFF,
-          # so no payload bloat. (The first attempt at this iteration used
-          # ghcr.io/scikit-build/manylinux_2_28_x86_64_cuda:12.8 but that
-          # repo returned `denied` from GHCR — the image does not exist or
-          # is private. Path B (track at #3) replaces both with self-install
-          # in the canonical PyPA manylinux image.)
           CIBW_MANYLINUX_X86_64_IMAGE: pytorch/manylinux-builder:cuda12.8
-          # variant=metal → native arm64 (macos-14); variant=cpu → cross-build x86_64 from arm64 runner.
           CIBW_ARCHS_MACOS: ${{ matrix.variant == 'metal' && 'arm64' || 'x86_64' }}
-          # cibuildwheel parses CIBW_ENVIRONMENT shell-style: values containing
-          # spaces or `;` MUST be double-quoted, otherwise the parser splits
-          # mid-value and rejects the rest as a "Malformed environment option".
-          # The `>-` folded scalar emits the substituted value unquoted; switch
-          # to `|` literal style with each var on its own line and explicitly
-          # quote CMAKE_ARGS so the embedded `-DCMAKE_CUDA_ARCHITECTURES=80;86;89;90`
-          # survives intact.
-          # Linux CUDA executable link: upstream llama.cpp's tools/mtmd
-          # CMakeLists has target_link_libraries(llama-mtmd-cli PRIVATE ggml-cuda)
-          # but doesn't propagate CUDA::cudart from libggml-cuda.so's PRIVATE
-          # deps. Result: `undefined reference to cudaFree@libcudart.so.12`
-          # at final executable link. LDFLAGS env is advisory and CMake
-          # ignored it; CMAKE_EXE_LINKER_FLAGS is mandatory and reaches
-          # every executable's link line. `--no-as-needed` keeps cudart
-          # linked even if no symbol from it is referenced from the
-          # executable's own .o files. (Cudart symbols are referenced from
-          # libggml-cuda.so, but ld defaults to --as-needed which would
-          # drop a direct -lcudart unless we override.)
-          # libmtmd.so + llama-mtmd-cli are the unified multimodal stack
-          # (vision: Llava/MiniCPM-V/Gemma 3 vision/Qwen-VL; audio).
-          # Python multimodal handlers (MtmdChatHandler, Llava15ChatHandler,
-          # MoondreamChatHandler) load these .so files via ctypes — not
-          # optional for the wheel.
+
+          # CIBW_ENVIRONMENT_LINUX (CUDA cell):
+          #   - CMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY: skip the CMake
+          #     compiler-detection probe's link step. Without this, the global
+          #     CMAKE_EXE_LINKER_FLAGS=-lcudart breaks the probe (TryCompile
+          #     runs in a sandbox where LIBRARY_PATH may not propagate, so
+          #     ld can't find -lcudart even though /usr/local/cuda/lib64
+          #     is set in the env). Documented CMake escape hatch for
+          #     cross/embedded builds where the default exe link can't
+          #     succeed at probe time.
+          #   - -L/usr/local/cuda/lib64 embedded in CMAKE_EXE_LINKER_FLAGS:
+          #     gives the linker the cudart search path explicitly, so the
+          #     real project link doesn't depend on env-var propagation.
           CIBW_ENVIRONMENT_LINUX: |
-            CMAKE_ARGS="${{ matrix.variant == 'cuda' && '-DGGML_CUDA=on -DCMAKE_CUDA_ARCHITECTURES=80;86;89;90 -DCMAKE_CUDA_RUNTIME_LIBRARY=Shared -DCUDAToolkit_ROOT=/usr/local/cuda -DCMAKE_EXE_LINKER_FLAGS=-Wl,--no-as-needed,-lcudart -DCMAKE_SHARED_LINKER_FLAGS=-Wl,--no-as-needed,-lcudart' || '' }}"
+            CMAKE_ARGS="${{ matrix.variant == 'cuda' && '-DGGML_CUDA=on -DCMAKE_CUDA_ARCHITECTURES=80;86;89;90 -DCMAKE_CUDA_RUNTIME_LIBRARY=Shared -DCUDAToolkit_ROOT=/usr/local/cuda -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY -DCMAKE_EXE_LINKER_FLAGS=-L/usr/local/cuda/lib64\ -Wl,--no-as-needed,-lcudart -DCMAKE_SHARED_LINKER_FLAGS=-L/usr/local/cuda/lib64\ -Wl,--no-as-needed,-lcudart' || '' }}"
             CUDA_HOME=/usr/local/cuda
             PATH=/usr/local/cuda/bin:$PATH
             LIBRARY_PATH=/usr/local/cuda/lib64:/usr/local/cuda/lib64/stubs
             LD_LIBRARY_PATH=/usr/local/cuda/lib64
-            LDFLAGS="-L/usr/local/cuda/lib64 -lcudart"
             MAX_JOBS=2
-          # cibuildwheel only auto-detects the manylinux ABI policy from
-          # well-known image names (quay.io/pypa/manylinux2014_*, etc.). Custom
-          # images like pytorch/manylinux-builder:cuda12.8 fall back to
-          # `manylinux_2_5` — too old; the wheel always uses newer glibc
-          # symbols. Override explicitly to manylinux2014_x86_64 (glibc 2.17,
-          # the actual base of pytorch's image).
-          CIBW_REPAIR_WHEEL_COMMAND_LINUX: "auditwheel repair --plat manylinux2014_x86_64 -w {dest_dir} {wheel}"
+
+          # Linux repair: PyTorch +cuXXX pattern. Don't bundle CUDA libs
+          # into the wheel (auditwheel-bundled cudart/cublas would push the
+          # wheel past 2 GB GitHub release-asset limit). Instead, exclude
+          # them from auditwheel and declare them as an [cuda12] extra in
+          # pyproject.toml so pip pulls them from PyPI at install time.
+          # Then patchelf the C extension's RPATH so it finds the
+          # pip-installed libs at <site-packages>/nvidia/<lib>/lib/.
+          CIBW_REPAIR_WHEEL_COMMAND_LINUX: bash {project}/scripts/repair_linux_wheel.sh "{wheel}" "{dest_dir}" "${{ matrix.variant }}"
+
+          # Linux test: install nvidia-cuda-runtime-cu12 in the test venv
+          # so the full-import smoke test runs end-to-end against the
+          # actually-loaded wheel (no scope-cut on rigor).
+          CIBW_BEFORE_TEST_LINUX: |
+            if [ "${{ matrix.variant }}" = "cuda" ]; then
+              pip install nvidia-cuda-runtime-cu12==12.8.57 nvidia-cublas-cu12==12.8.3.14
+            fi
+
           CIBW_ENVIRONMENT_WINDOWS: |
             CMAKE_ARGS="${{ matrix.variant == 'cuda' && '-DGGML_CUDA=on -DCMAKE_CUDA_ARCHITECTURES=80;86;89;90' || '' }}"
             MAX_JOBS=2
-          # variant=metal: native arm64 build, default GGML_NATIVE detection works.
-          # variant=cpu: cross-build x86_64 from arm64 runner. Three things to
-          # override from the arm64 host defaults:
-          #  1. Disable GGML_NATIVE — its host-probe emits `-mcpu=apple-m1`,
-          #     which clang rejects when targeting x86_64. Replace with an
-          #     explicit Intel-Mac SIMD baseline (AVX/AVX2/FMA covers every
-          #     Mac shipped since ~2013).
-          #  2. Disable GGML_METAL — llama.cpp auto-enables Metal on macOS
-          #     even when targeting x86_64; the resulting Metal compile units
-          #     drag in macOS-15-only headers we don't need on Intel Mac.
-          #  3. Bump MACOSX_DEPLOYMENT_TARGET 10.9 → 10.15. ggml-backend-dl
-          #     uses `std::filesystem::path` (C++17), which on macOS only
-          #     became available with 10.15 (Catalina). cibuildwheel's
-          #     x86_64 default of 10.9 is older than std::filesystem.
+
+          # Windows repair: bundle CUDA DLLs INTO the wheel via delvewheel.
+          # End users get a self-contained CUDA wheel; no separate CUDA
+          # toolkit install required. --add-path points delvewheel at
+          # Jimver's installed location so it finds cudart64_12.dll +
+          # cublas64_12.dll + transitive deps.
+          CIBW_REPAIR_WHEEL_COMMAND_WINDOWS: ${{ matrix.variant == 'cuda' && 'delvewheel repair --add-path "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.8/bin" -w {dest_dir} {wheel}' || 'delvewheel repair -w {dest_dir} {wheel}' }}
+
+          # Windows test: install nvidia-cuda-runtime-cu12 as defense-in-depth
+          # in case delvewheel misses a transitive DLL.
+          CIBW_BEFORE_TEST_WINDOWS: |
+            if "${{ matrix.variant }}"=="cuda" pip install nvidia-cuda-runtime-cu12==12.8.57 nvidia-cublas-cu12==12.8.3.14
+
           CIBW_ENVIRONMENT_MACOS: |
             CMAKE_ARGS="${{ matrix.variant == 'metal' && '-DGGML_METAL=on -DGGML_METAL_EMBED_LIBRARY=ON' || '-DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_METAL=OFF -DGGML_BLAS=OFF' }}"
             MACOSX_DEPLOYMENT_TARGET=${{ matrix.variant == 'metal' && '11.0' || '10.15' }}
             MAX_JOBS=2
-          # Use `python -m pip` so Windows can self-upgrade pip without the
-          # "ERROR: To modify pip, please run the following command..." abort
-          # that bit v0.3.0-tq1's Windows CPU cells.
-          CIBW_BEFORE_BUILD: python -m pip install --upgrade pip cmake ninja scikit-build-core
-          # Smoke-test the sentinel inside cibuildwheel's isolated test env.
+
+          CIBW_BEFORE_BUILD: python -m pip install --upgrade pip cmake ninja scikit-build-core delvewheel
+
+          # Smoke test: import the actually-loaded wheel and assert
+          # build-time sentinels. Runs against the installed wheel,
+          # not against source files (no scope-cut on rigor).
           CIBW_TEST_COMMAND: >-
             python -c "import llama_cpp; assert llama_cpp.TURBOQUANT_BUILD is True, 'sentinel missing'; assert llama_cpp.TURBOQUANT_KV_TYPES == ('turbo2','turbo3','turbo4'), 'KV types wrong'; print('sentinel OK')"
-          # arm64 runners cannot execute the x86_64 sentinel test natively;
-          # skip that test cell. The wheel is still produced and uploaded.
           CIBW_TEST_SKIP: "*-macosx_x86_64"
 
       - uses: actions/upload-artifact@v4
@@ -198,10 +162,10 @@ jobs:
           if-no-files-found: error
 
   github_release:
-    name: Attach wheels to GitHub Release
+    name: GitHub Release
     needs: [build_wheels, build_sdist]
-    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write
     steps:
@@ -209,16 +173,21 @@ jobs:
         with:
           path: dist
           merge-multiple: true
-      - uses: softprops/action-gh-release@v2
+      - name: Generate SHA256SUMS
+        run: cd dist && sha256sum *.whl *.tar.gz > SHA256SUMS
+      - name: Release
+        uses: softprops/action-gh-release@v2
         with:
-          files: dist/*
-          generate_release_notes: true
+          files: |
+            dist/*.whl
+            dist/*.tar.gz
+            dist/SHA256SUMS
 
-  publish:
+  publish_pypi:
     name: Publish to PyPI (Trusted Publishing)
     needs: [build_wheels, build_sdist]
-    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
     permissions:
       id-token: write
     steps:
@@ -226,5 +195,6 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+      - name: Drop SHA256SUMS before publish
+        run: cd dist && rm -f SHA256SUMS *.txt
       - uses: pypa/gh-action-pypi-publish@release/v1
-        # No `with.password:` — OIDC handles auth via Trusted Publishing.
