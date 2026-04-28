@@ -16,19 +16,29 @@ on:
 
 jobs:
   build_wheels:
-    name: ${{ matrix.os }} cp${{ matrix.python }} ${{ matrix.variant }}
+    name: ${{ matrix.os }} cp${{ matrix.python }} ${{ matrix.variant }}${{ matrix.glibc && format('-glibc{0}', matrix.glibc) || '' }}
     runs-on: ${{ matrix.os }}
+    # iter #13: experimental cells fail soft (data-collection only).
+    # Non-experimental cells fail strict so a real regression still
+    # blocks publish_pypi via the needs:[build_wheels] gate.
+    continue-on-error: ${{ matrix.experimental == true }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          # Linux x86_64
+          # Linux x86_64 — main matrix (manylinux_2_28 / glibc 2.28)
           - { os: ubuntu-latest,  python: "310", variant: cpu  }
           - { os: ubuntu-latest,  python: "311", variant: cpu  }
           - { os: ubuntu-latest,  python: "312", variant: cpu  }
           - { os: ubuntu-latest,  python: "310", variant: cuda }
           - { os: ubuntu-latest,  python: "311", variant: cuda }
           - { os: ubuntu-latest,  python: "312", variant: cuda }
+          # iter #13 sweep cell (data-collection only). manylinux_2_34 / glibc 2.34
+          # via pypa/manylinux_2_34_x86_64 + DNF-installed CUDA 12.8.
+          # Result feeds the Path B decision for 0.7.1 — see issue #3.
+          # continue-on-error:true (via experimental flag above) so its
+          # outcome doesn't block the release.
+          - { os: ubuntu-latest,  python: "311", variant: cuda, glibc: "2_34", experimental: true }
           # Windows x86_64
           - { os: windows-latest, python: "310", variant: cpu  }
           - { os: windows-latest, python: "311", variant: cpu  }
@@ -67,7 +77,14 @@ jobs:
           CIBW_SKIP: "*-musllinux* *-manylinux_i686 pp*"
           CIBW_ARCHS_LINUX: x86_64
           CIBW_ARCHS_WINDOWS: AMD64
-          CIBW_MANYLINUX_X86_64_IMAGE: pytorch/manylinux-builder:cuda12.8
+          # iter #13: main cells use pytorch/manylinux2_28-builder:cuda12.8
+          # (glibc 2.28; CUDA 12.8 preinstalled). The old
+          # pytorch/manylinux-builder:cuda12.8 (CentOS 7 / glibc 2.17) cannot
+          # link-resolve cuBLAS 12.8's versioned symbols (log2f@GLIBC_2.27,
+          # __cxa_thread_atexit_impl@GLIBC_2.18).
+          # The sweep cell (matrix.glibc == '2_34') uses pypa's manylinux_2_34
+          # image and DNF-installs CUDA via CIBW_BEFORE_ALL_LINUX.
+          CIBW_MANYLINUX_X86_64_IMAGE: ${{ matrix.glibc == '2_34' && 'quay.io/pypa/manylinux_2_34_x86_64' || 'pytorch/manylinux2_28-builder:cuda12.8' }}
           CIBW_ARCHS_MACOS: ${{ matrix.variant == 'metal' && 'arm64' || 'x86_64' }}
 
           # CIBW_ENVIRONMENT_LINUX (CUDA cell):
@@ -82,8 +99,17 @@ jobs:
           #   - -L/usr/local/cuda/lib64 embedded in CMAKE_EXE_LINKER_FLAGS:
           #     gives the linker the cudart search path explicitly, so the
           #     real project link doesn't depend on env-var propagation.
+          # iter #13 sweep cell: DNF-install CUDA 12.8 inside pypa's
+          # manylinux_2_34 image (which doesn't ship CUDA). Empty for
+          # main cells (pytorch image already has CUDA preinstalled).
+          CIBW_BEFORE_ALL_LINUX: ${{ matrix.glibc == '2_34' && 'bash ./scripts/install_cuda_in_manylinux.sh' || '' }}
+
           CIBW_ENVIRONMENT_LINUX: |
-            CMAKE_ARGS="${{ matrix.variant == 'cuda' && '-DGGML_CUDA=on -DCMAKE_CUDA_ARCHITECTURES=80;86;89;90 -DCMAKE_CUDA_RUNTIME_LIBRARY=Shared -DCUDAToolkit_ROOT=/usr/local/cuda -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY -DCMAKE_EXE_LINKER_FLAGS=-L/usr/local/cuda/lib64\ -Wl,--no-as-needed,-lcudart -DCMAKE_SHARED_LINKER_FLAGS=-L/usr/local/cuda/lib64\ -Wl,--no-as-needed,-lcudart' || '' }}"
+            # iter #13: linker flags now also pull in libcuda (driver API,
+            # via /usr/local/cuda/lib64/stubs) and OpenMP (via -fopenmp).
+            # Fixes undefined-reference at link of llama-mtmd-cli/debug for
+            # cuMem*/cuDevice* (driver API) and GOMP_*/omp_* (OpenMP).
+            CMAKE_ARGS="${{ matrix.variant == 'cuda' && '-DGGML_CUDA=on -DCMAKE_CUDA_ARCHITECTURES=80;86;89;90 -DCMAKE_CUDA_RUNTIME_LIBRARY=Shared -DCUDAToolkit_ROOT=/usr/local/cuda -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY -DCMAKE_EXE_LINKER_FLAGS=-L/usr/local/cuda/lib64\ -L/usr/local/cuda/lib64/stubs\ -Wl,--no-as-needed,-lcudart,-lcuda\ -fopenmp -DCMAKE_SHARED_LINKER_FLAGS=-L/usr/local/cuda/lib64\ -L/usr/local/cuda/lib64/stubs\ -Wl,--no-as-needed,-lcudart,-lcuda\ -fopenmp' || '' }}"
             CUDA_HOME=/usr/local/cuda
             PATH=/usr/local/cuda/bin:$PATH
             LIBRARY_PATH=/usr/local/cuda/lib64:/usr/local/cuda/lib64/stubs
@@ -97,7 +123,13 @@ jobs:
           # pyproject.toml so pip pulls them from PyPI at install time.
           # Then patchelf the C extension's RPATH so it finds the
           # pip-installed libs at <site-packages>/nvidia/<lib>/lib/.
-          CIBW_REPAIR_WHEEL_COMMAND_LINUX: bash {project}/scripts/repair_linux_wheel.sh "{wheel}" "{dest_dir}" "${{ matrix.variant }}"
+          # iter #13: cibuildwheel does NOT substitute {project} in
+          # CIBW_REPAIR_WHEEL_COMMAND_*. Only {wheel} and {dest_dir} are
+          # valid here. The repair runs with cwd=/project inside the
+          # container, so a relative path resolves correctly.
+          # iter #13: 4th positional arg = platform tag for auditwheel
+          # (manylinux_2_28 for main cells; manylinux_2_34 for sweep cell).
+          CIBW_REPAIR_WHEEL_COMMAND_LINUX: bash ./scripts/repair_linux_wheel.sh "{wheel}" "{dest_dir}" "${{ matrix.variant }}" "${{ matrix.glibc == '2_34' && 'manylinux_2_34_x86_64' || 'manylinux_2_28_x86_64' }}"
 
           # Linux test: install nvidia-cuda-runtime-cu12 in the test venv
           # so the full-import smoke test runs end-to-end against the
@@ -116,7 +148,13 @@ jobs:
           # toolkit install required. --add-path points delvewheel at
           # Jimver's installed location so it finds cudart64_12.dll +
           # cublas64_12.dll + transitive deps.
-          CIBW_REPAIR_WHEEL_COMMAND_WINDOWS: ${{ matrix.variant == 'cuda' && 'delvewheel repair --add-path "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.8/bin" -w {dest_dir} {wheel}' || 'delvewheel repair -w {dest_dir} {wheel}' }}
+          # iter #13: --analyze-existing tells delvewheel to scan ALL .dll
+          # files already in the wheel (default behavior is .pyd-only).
+          # llama-cpp-python ships plain .dll files (llama.dll, ggml-cuda.dll
+          # etc.) loaded via ctypes.CDLL, no .pyd. Without this flag,
+          # delvewheel saw nothing to analyze and just copied the wheel,
+          # so cudart64_12.dll / cublas64_12.dll were never bundled.
+          CIBW_REPAIR_WHEEL_COMMAND_WINDOWS: ${{ matrix.variant == 'cuda' && 'delvewheel repair --analyze-existing --add-path "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.8/bin" -w {dest_dir} {wheel}' || 'delvewheel repair --analyze-existing -w {dest_dir} {wheel}' }}
 
           # Windows test: install nvidia-cuda-runtime-cu12 as defense-in-depth
           # in case delvewheel misses a transitive DLL.
@@ -139,7 +177,9 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: wheels-${{ matrix.os }}-cp${{ matrix.python }}-${{ matrix.variant }}
+          # iter #13: include matrix.glibc in artifact name to avoid collision
+          # between the sweep cell and the main cp311 cuda cell.
+          name: wheels-${{ matrix.os }}-cp${{ matrix.python }}-${{ matrix.variant }}${{ matrix.glibc && format('-glibc{0}', matrix.glibc) || '' }}
           path: wheelhouse/*.whl
           if-no-files-found: error
 
@@ -195,6 +235,14 @@ jobs:
         with:
           path: dist
           merge-multiple: true
-      - name: Drop SHA256SUMS before publish
-        run: cd dist && rm -f SHA256SUMS *.txt
+      - name: Drop SHA256SUMS + sweep wheel before publish
+        run: |
+          cd dist
+          rm -f SHA256SUMS *.txt
+          # iter #13: sweep cell's manylinux_2_34 wheel is data-collection
+          # only; not promoted to PyPI in 0.7.0. If the sweep validates
+          # Path B, 0.7.1 will explicitly include 2_34 wheels. The wheel
+          # remains attached to the GitHub Release for inspection.
+          rm -f *manylinux_2_34*.whl
+          ls -la
       - uses: pypa/gh-action-pypi-publish@release/v1

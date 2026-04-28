@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Repair a Linux wheel built by cibuildwheel for llama-cpp-python-turboquant.
 #
-# Args: $1 = source wheel path, $2 = dest dir, $3 = variant ("cuda" or "cpu")
+# Args: $1 = source wheel path
+#       $2 = dest dir
+#       $3 = variant ("cuda" or "cpu")
+#       $4 = platform tag (default: manylinux_2_28_x86_64)
 #
 # CPU variant: standard auditwheel repair, bundles all non-system libs.
 # CUDA variant: PyTorch +cuXXX pattern. Exclude CUDA libs from the wheel
@@ -13,12 +16,13 @@ set -euo pipefail
 WHEEL="$1"
 DEST_DIR="$2"
 VARIANT="$3"
+PLAT="${4:-manylinux_2_28_x86_64}"
 
 if [ "$VARIANT" = "cuda" ]; then
     # Exclude CUDA runtime libs; user's [cuda12] extra installs them at
     # runtime from nvidia-cuda-runtime-cu12 / nvidia-cublas-cu12 wheels.
     auditwheel repair \
-        --plat manylinux2014_x86_64 \
+        --plat "$PLAT" \
         --exclude libcudart.so.12 \
         --exclude libcublas.so.12 \
         --exclude libcublasLt.so.12 \
@@ -42,5 +46,5 @@ if [ "$VARIANT" = "cuda" ]; then
     popd > /dev/null
     rm -rf "$UNPACK_DIR"
 else
-    auditwheel repair --plat manylinux2014_x86_64 -w "$DEST_DIR" "$WHEEL"
+    auditwheel repair --plat "$PLAT" -w "$DEST_DIR" "$WHEEL"
 fi
