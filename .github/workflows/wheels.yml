@@ -66,23 +66,14 @@ jobs:
         with:
           key: ${{ matrix.os }}-cp${{ matrix.python }}-${{ matrix.variant }}
 
-      - name: Install CUDA 12.8 toolkit (Linux)
-        if: matrix.variant == 'cuda' && runner.os == 'Linux'
-        uses: Jimver/cuda-toolkit@v0.2.30
-        with:
-          cuda: "12.8.0"
-          method: "network"
-          # NVIDIA's CUDA 12+ apt repo splits packages into two namespaces:
-          #   cuda-<name>-12-8 — toolchain (nvcc, cudart, ...)
-          #   lib<name>-12-8   — runtime libraries (cublas, curand, ...)
-          # Jimver/cuda-toolkit reflects this split via two inputs. Passing a
-          # library name through `sub-packages` constructs `cuda-cublas-12-8`
-          # which does not exist (Jimver issue #371). We only need cublas +
-          # curand for llama.cpp's GGML_CUDA build (cusparse/cusolver are not
-          # linked by ggml-cuda).
-          sub-packages: '["nvcc","cudart"]'
-          non-cuda-sub-packages: '["libcublas","libcublas-dev","libcurand","libcurand-dev"]'
-
+      # Linux CUDA path: cibuildwheel runs the build inside a sandboxed
+      # manylinux Docker container, so installing CUDA on the host runner
+      # (e.g. via Jimver) is invisible to nvcc inside the build. Use a
+      # CUDA-enabled manylinux_2_28 image instead — see CIBW_MANYLINUX_X86_64_IMAGE
+      # below. No Linux Jimver step is needed.
+      #
+      # Windows cibuildwheel runs directly on the host (no Docker), so the
+      # Jimver-on-host install IS visible to the build. Keep it for Windows.
       - name: Install CUDA 12.8 toolkit (Windows)
         if: matrix.variant == 'cuda' && runner.os == 'Windows'
         uses: Jimver/cuda-toolkit@v0.2.30
@@ -97,6 +88,15 @@ jobs:
           CIBW_SKIP: "*-musllinux* *-manylinux_i686 pp*"
           CIBW_ARCHS_LINUX: x86_64
           CIBW_ARCHS_WINDOWS: AMD64
+          # Use a CUDA-enabled manylinux_2_28 image so nvcc is visible inside
+          # the cibuildwheel container (the Jimver-on-host approach we tried
+          # in iterations #1–#4 did not survive into the sandbox). The
+          # scikit-build org maintains this image specifically for this use
+          # case; nvcc + libcublas + libcurand are pre-installed at
+          # /usr/local/cuda. CPU cells use the same image — wheel doesn't
+          # link CUDA when -DGGML_CUDA is OFF, so no payload bloat.
+          # See https://github.com/scikit-build/manylinux for the image source.
+          CIBW_MANYLINUX_X86_64_IMAGE: ghcr.io/scikit-build/manylinux_2_28_x86_64_cuda:12.8
           # variant=metal → native arm64 (macos-14); variant=cpu → cross-build x86_64 from arm64 runner.
           CIBW_ARCHS_MACOS: ${{ matrix.variant == 'metal' && 'arm64' || 'x86_64' }}
           # cibuildwheel parses CIBW_ENVIRONMENT shell-style: values containing
@@ -108,6 +108,8 @@ jobs:
           # survives intact.
           CIBW_ENVIRONMENT_LINUX: |
             CMAKE_ARGS="${{ matrix.variant == 'cuda' && '-DGGML_CUDA=on -DCMAKE_CUDA_ARCHITECTURES=80;86;89;90' || '' }}"
+            CUDA_HOME=/usr/local/cuda
+            PATH=/usr/local/cuda/bin:$PATH
             MAX_JOBS=2
           CIBW_ENVIRONMENT_WINDOWS: |
             CMAKE_ARGS="${{ matrix.variant == 'cuda' && '-DGGML_CUDA=on -DCMAKE_CUDA_ARCHITECTURES=80;86;89;90' || '' }}"
