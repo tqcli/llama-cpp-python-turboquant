@@ -44,16 +44,19 @@ jobs:
           - { os: macos-14, python: "310", variant: metal }
           - { os: macos-14, python: "311", variant: metal }
           - { os: macos-14, python: "312", variant: metal }
-          # ---------- macOS x86_64 (CPU) — cross-built from macos-14 (arm64) ----------
-          # Native macos-13 (Intel) runners are deprecated by GitHub (closing
-          # Dec 2025) and v0.3.0-tq1's macos-13 cells sat 24h in the queue
-          # without ever being assigned. Cross-build x86_64 wheels from arm64
-          # runners; CIBW_TEST_SKIP below skips the in-process sentinel test
-          # for the cross-arch wheel since arm64 runners can't execute x86_64
-          # binaries natively.
-          - { os: macos-14, python: "310", variant: cpu }
-          - { os: macos-14, python: "311", variant: cpu }
-          - { os: macos-14, python: "312", variant: cpu }
+          # macOS x86_64 (Intel Mac) — DROPPED for 0.7.0.
+          # Upstream llama-cpp-python's CMakeLists.txt uses
+          # `set(GGML_METAL ON ... FORCE)` for ALL macOS builds (line 95),
+          # which drags in Metal compile units that need C++17 std::filesystem
+          # (macOS 10.15+) — incompatible with cibuildwheel's x86_64 default
+          # deployment target of 10.9. Patching upstream's FORCE creates merge
+          # debt; cross-build with a 10.15 target works in env but the
+          # `set(... FORCE)` overrides our `-DGGML_METAL=OFF`.
+          # Apple Silicon (Metal) cells above cover ~85-90% of Macs sold
+          # since 2020. Intel Mac users `pip install ...` falls back to
+          # source build via the published sdist. Re-enable in 0.7.1 once the
+          # upstream FORCE lines are patched. Tracked at
+          # https://github.com/tqcli/tqcli/issues (file 0.7.1 follow-up).
 
     steps:
       - uses: actions/checkout@v4
@@ -108,9 +111,12 @@ jobs:
           # quote CMAKE_ARGS so the embedded `-DCMAKE_CUDA_ARCHITECTURES=80;86;89;90`
           # survives intact.
           CIBW_ENVIRONMENT_LINUX: |
-            CMAKE_ARGS="${{ matrix.variant == 'cuda' && '-DGGML_CUDA=on -DCMAKE_CUDA_ARCHITECTURES=80;86;89;90' || '' }}"
+            CMAKE_ARGS="${{ matrix.variant == 'cuda' && '-DGGML_CUDA=on -DCMAKE_CUDA_ARCHITECTURES=80;86;89;90 -DCMAKE_CUDA_RUNTIME_LIBRARY=Shared -DCUDAToolkit_ROOT=/usr/local/cuda' || '' }}"
             CUDA_HOME=/usr/local/cuda
             PATH=/usr/local/cuda/bin:$PATH
+            LIBRARY_PATH=/usr/local/cuda/lib64:/usr/local/cuda/lib64/stubs
+            LD_LIBRARY_PATH=/usr/local/cuda/lib64
+            LDFLAGS="-L/usr/local/cuda/lib64 -lcudart"
             MAX_JOBS=2
           # cibuildwheel only auto-detects the manylinux ABI policy from
           # well-known image names (quay.io/pypa/manylinux2014_*, etc.). Custom
