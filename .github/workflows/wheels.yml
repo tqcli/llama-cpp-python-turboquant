@@ -111,20 +111,34 @@ jobs:
             CMAKE_ARGS="${{ matrix.variant == 'cuda' && '-DGGML_CUDA=on -DCMAKE_CUDA_ARCHITECTURES=80;86;89;90' || '' }}"
             CUDA_HOME=/usr/local/cuda
             PATH=/usr/local/cuda/bin:$PATH
-            AUDITWHEEL_PLAT=manylinux2014_x86_64
             MAX_JOBS=2
+          # cibuildwheel only auto-detects the manylinux ABI policy from
+          # well-known image names (quay.io/pypa/manylinux2014_*, etc.). Custom
+          # images like pytorch/manylinux-builder:cuda12.8 fall back to
+          # `manylinux_2_5` — too old; the wheel always uses newer glibc
+          # symbols. Override explicitly to manylinux2014_x86_64 (glibc 2.17,
+          # the actual base of pytorch's image).
+          CIBW_REPAIR_WHEEL_COMMAND_LINUX: "auditwheel repair --plat manylinux2014_x86_64 -w {dest_dir} {wheel}"
           CIBW_ENVIRONMENT_WINDOWS: |
             CMAKE_ARGS="${{ matrix.variant == 'cuda' && '-DGGML_CUDA=on -DCMAKE_CUDA_ARCHITECTURES=80;86;89;90' || '' }}"
             MAX_JOBS=2
           # variant=metal: native arm64 build, default GGML_NATIVE detection works.
-          # variant=cpu: cross-build x86_64 from arm64 runner. llama.cpp's
-          # GGML_NATIVE auto-detect probes the host CPU (apple-m1) and emits
-          # `-mcpu=apple-m1` even for the x86_64 target — clang then errors
-          # with "unknown target CPU 'apple-m1'". Disable GGML_NATIVE and set
-          # an explicit Intel-Mac SIMD baseline (every Intel Mac shipped since
-          # ~2013 supports AVX/AVX2/FMA).
+          # variant=cpu: cross-build x86_64 from arm64 runner. Three things to
+          # override from the arm64 host defaults:
+          #  1. Disable GGML_NATIVE — its host-probe emits `-mcpu=apple-m1`,
+          #     which clang rejects when targeting x86_64. Replace with an
+          #     explicit Intel-Mac SIMD baseline (AVX/AVX2/FMA covers every
+          #     Mac shipped since ~2013).
+          #  2. Disable GGML_METAL — llama.cpp auto-enables Metal on macOS
+          #     even when targeting x86_64; the resulting Metal compile units
+          #     drag in macOS-15-only headers we don't need on Intel Mac.
+          #  3. Bump MACOSX_DEPLOYMENT_TARGET 10.9 → 10.15. ggml-backend-dl
+          #     uses `std::filesystem::path` (C++17), which on macOS only
+          #     became available with 10.15 (Catalina). cibuildwheel's
+          #     x86_64 default of 10.9 is older than std::filesystem.
           CIBW_ENVIRONMENT_MACOS: |
-            CMAKE_ARGS="${{ matrix.variant == 'metal' && '-DGGML_METAL=on -DGGML_METAL_EMBED_LIBRARY=ON' || '-DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON' }}"
+            CMAKE_ARGS="${{ matrix.variant == 'metal' && '-DGGML_METAL=on -DGGML_METAL_EMBED_LIBRARY=ON' || '-DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_METAL=OFF -DGGML_BLAS=OFF' }}"
+            MACOSX_DEPLOYMENT_TARGET=${{ matrix.variant == 'metal' && '11.0' || '10.15' }}
             MAX_JOBS=2
           # Use `python -m pip` so Windows can self-upgrade pip without the
           # "ERROR: To modify pip, please run the following command..." abort
